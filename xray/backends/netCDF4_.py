@@ -23,9 +23,10 @@ _endian_lookup = {'=': 'native',
 
 
 class NetCDF4ArrayWrapper(NDArrayMixin):
-    def __init__(self, array, is_remote=False):
+    def __init__(self, array, is_remote=False, store=None):
         self.array = array
         self.is_remote = is_remote
+        self.store=store
 
     @property
     def dtype(self):
@@ -38,6 +39,7 @@ class NetCDF4ArrayWrapper(NDArrayMixin):
         return dtype
 
     def __getitem__(self, key):
+        self.store.ensure_open()
         if self.is_remote:  # pragma: no cover
             getitem = partial(robust_getitem, catch=RuntimeError)
         else:
@@ -127,17 +129,16 @@ class NetCDF4DataStore(AbstractWritableDataStore):
     """
     def __init__(self, filename, mode='r', format='NETCDF4', group=None,
                  writer=None, clobber=True, diskless=False, persist=False):
-        import netCDF4 as nc4
         if format is None:
             format = 'NETCDF4'
-        ds = nc4.Dataset(filename, mode=mode, clobber=clobber,
-                         diskless=diskless, persist=persist,
-                         format=format)
-        with close_on_error(ds):
-            self.ds = _nc4_group(ds, group, mode)
+        self.nc_kwargs=dict(mode=mode, clobber=clobber,
+                            diskless=diskless, persist=persist,
+                            format=format)
+        self.group=group
         self.format = format
         self.is_remote = is_remote_uri(filename)
         self._filename = filename
+        self.open_ds()
         super(NetCDF4DataStore, self).__init__(writer)
 
     def store(self, variables, attributes):
@@ -150,7 +151,7 @@ class NetCDF4DataStore(AbstractWritableDataStore):
         var.set_auto_maskandscale(False)
         dimensions = var.dimensions
         data = indexing.LazilyIndexedArray(NetCDF4ArrayWrapper(
-            var, self.is_remote))
+            var, self.is_remote, self))
         attributes = OrderedDict((k, var.getncattr(k))
                                  for k in var.ncattrs())
         _ensure_fill_value_valid(data, attributes)
@@ -237,8 +238,27 @@ class NetCDF4DataStore(AbstractWritableDataStore):
         return nc4_var, variable.data
 
     def sync(self):
+        self.ensure_open()
         super(NetCDF4DataStore, self).sync()
         self.ds.sync()
+
+    def open_ds(self):
+        """
+        Open the netCDF4 dataset in the correct group.
+        """
+        import netCDF4 as nc4
+        ds = nc4.Dataset(self._filename, **self.nc_kwargs)
+        with close_on_error(ds):
+            self.ds = _nc4_group(ds, self.group, self.nc_kwargs['mode'])
+
+    def ensure_open(self):
+        """ ensure that the underlying dataset is open
+        """
+        ds = self.ds
+        while ds.parent is not None:
+            ds = ds.parent
+        if not ds._isopen:
+            self.open_ds()
 
     def close(self):
         ds = self.ds
