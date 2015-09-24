@@ -27,10 +27,12 @@ class NetCDF4ArrayWrapper(NDArrayMixin):
         self.array = array
         self.is_remote = is_remote
         self.store=store
+        self._dtype = self.array.dtype
+        self._shape = self.array.shape
 
     @property
     def dtype(self):
-        dtype = self.array.dtype
+        dtype = self._dtype
         if dtype is str:
             # return object dtype because that's the only way in numpy to
             # represent variable length strings; it also prevents automatic
@@ -38,18 +40,28 @@ class NetCDF4ArrayWrapper(NDArrayMixin):
             dtype = np.dtype('O')
         return dtype
 
+    @property
+    def shape(self):
+        return self._shape
+
     def __getitem__(self, key):
-        self.store.ensure_open()
         if self.is_remote:  # pragma: no cover
             getitem = partial(robust_getitem, catch=RuntimeError)
         else:
             getitem = operator.getitem
-        data = getitem(self.array, key)
+        try:
+            self.store.ensure_open()
+            data = getitem(self.array, key)
+        except RuntimeError as e:
+            import ipdb; ipdb.set_trace()
+            raise e
+            pass
         if self.ndim == 0:
             # work around for netCDF4-python's broken handling of 0-d
             # arrays (slicing them always returns a 1-dimensional array):
             # https://github.com/Unidata/netcdf4-python/pull/220
             data = np.asscalar(data)
+        self.store.close()
         return data
 
 
@@ -142,6 +154,7 @@ class NetCDF4DataStore(AbstractWritableDataStore):
         super(NetCDF4DataStore, self).__init__(writer)
 
     def store(self, variables, attributes):
+        self.ensure_open()
         # All NetCDF files get CF encoded by default, without this attempting
         # to write times, for example, would fail.
         cf_variables, cf_attrs = cf_encoder(variables, attributes)
@@ -265,4 +278,5 @@ class NetCDF4DataStore(AbstractWritableDataStore):
         # netCDF4 only allows closing the root group
         while ds.parent is not None:
             ds = ds.parent
-        ds.close()
+        if ds._isopen:
+            ds.close()
