@@ -53,7 +53,6 @@ class NetCDF4ArrayWrapper(NDArrayMixin):
             self.store.ensure_open()
             data = getitem(self.array, key)
         except RuntimeError as e:
-            import ipdb; ipdb.set_trace()
             raise e
             pass
         if self.ndim == 0:
@@ -151,6 +150,14 @@ class NetCDF4DataStore(AbstractWritableDataStore):
         self.is_remote = is_remote_uri(filename)
         self._filename = filename
         self.open_ds()
+        # internal mode for opening and closing
+        # the dataset, can not be 'w' since this
+        # would overwrite the existing file
+        if mode in ['w', 'ws']:
+            self.internal_mode = {'w': 'a',
+                                  'ws': 'as'}[mode]
+        else:
+            self.internal_mode = mode
         super(NetCDF4DataStore, self).__init__(writer)
 
     def store(self, variables, attributes):
@@ -271,6 +278,10 @@ class NetCDF4DataStore(AbstractWritableDataStore):
         while ds.parent is not None:
             ds = ds.parent
         if not ds._isopen:
+            # we don't want to use the creation mode here
+            # since this might be 'w' which would overwrite the
+            # file
+            self.nc_kwargs['mode'] = self.internal_mode
             self.open_ds()
 
     def close(self):
