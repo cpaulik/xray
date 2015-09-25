@@ -1,5 +1,6 @@
 import operator
 from functools import partial
+import contextlib
 
 import numpy as np
 
@@ -49,18 +50,13 @@ class NetCDF4ArrayWrapper(NDArrayMixin):
             getitem = partial(robust_getitem, catch=RuntimeError)
         else:
             getitem = operator.getitem
-        try:
-            self.store.ensure_open()
+        with self.store.opened_temporarly():
             data = getitem(self.array, key)
-        except RuntimeError as e:
-            raise e
-            pass
         if self.ndim == 0:
             # work around for netCDF4-python's broken handling of 0-d
             # arrays (slicing them always returns a 1-dimensional array):
             # https://github.com/Unidata/netcdf4-python/pull/220
             data = np.asscalar(data)
-        self.store.close()
         return data
 
 
@@ -161,7 +157,6 @@ class NetCDF4DataStore(AbstractWritableDataStore):
         super(NetCDF4DataStore, self).__init__(writer)
 
     def store(self, variables, attributes):
-        self.ensure_open()
         # All NetCDF files get CF encoded by default, without this attempting
         # to write times, for example, would fail.
         cf_variables, cf_attrs = cf_encoder(variables, attributes)
@@ -258,7 +253,6 @@ class NetCDF4DataStore(AbstractWritableDataStore):
         return nc4_var, variable.data
 
     def sync(self):
-        self.ensure_open()
         super(NetCDF4DataStore, self).sync()
         self.ds.sync()
 
@@ -271,7 +265,8 @@ class NetCDF4DataStore(AbstractWritableDataStore):
         with close_on_error(ds):
             self.ds = _nc4_group(ds, self.group, self.nc_kwargs['mode'])
 
-    def ensure_open(self):
+    @contextlib.contextmanager
+    def opened_temporarly(self):
         """ ensure that the underlying dataset is open
         """
         ds = self.ds
@@ -282,7 +277,14 @@ class NetCDF4DataStore(AbstractWritableDataStore):
             # since this might be 'w' which would overwrite the
             # file
             self.nc_kwargs['mode'] = self.internal_mode
-            self.open_ds()
+            try:
+                self.open_ds()
+                yield
+            finally:
+                self.close()
+        else:
+            yield
+            self.close()
 
     def close(self):
         ds = self.ds
